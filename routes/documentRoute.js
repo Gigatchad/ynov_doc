@@ -1,13 +1,27 @@
 const express = require('express');
-const { uploadDocument } = require('../controllers/documentController');
-const fileUpload = require('express-fileupload'); // Middleware pour gérer les uploads de fichiers
+const fileUpload = require('express-fileupload'); // Middleware to handle file uploads
+const {
+  uploadDocument,
+  getAllRequests,
+  getRequestById,
+  addRequest,
+  updateRequestStatus
+} = require('../controllers/documentController');
+const { isAdmin } = require('../middlewares/authMiddleware');
 
 const router = express.Router();
 
-// Middleware pour gérer les fichiers
 router.use(fileUpload());
 
-// Route d'upload des documents
+
 router.post('/upload', uploadDocument);
+
+router.post('/requests', addRequest);
+
+router.get('/requests', isAdmin, getAllRequests);
+
+router.get('/requests/:id', isAdmin, getRequestById);
+
+router.patch('/requests/:id', isAdmin, updateRequestStatus);
 
 module.exports = router;
