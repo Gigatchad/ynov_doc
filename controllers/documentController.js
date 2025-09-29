@@ -4,7 +4,9 @@ const { db, admin } = require('../firebase'); // Firebase Admin SDK
 // Upload document (Personnel only)
 const uploadDocument = async (req, res) => {
   try {
-    const decodedToken = await admin.auth().verifyIdToken(req.headers.authorization?.split(' ')[1]);
+    const decodedToken = await admin.auth().verifyIdToken(
+      req.headers.authorization?.split(' ')[1]
+    );
     if (!['personnel'].includes(decodedToken.role)) {
       return res.status(403).json({ message: 'Access denied: personnel only' });
     }
@@ -18,12 +20,18 @@ const uploadDocument = async (req, res) => {
       folder: 'documents',
     });
 
-    // Notify the requester (student or parent) that their document was uploaded
+    // Notify the requester (student or parent)
     const requestId = req.body.requestID;
     if (requestId) {
       const requestDoc = await db.collection("document_requests").doc(requestId).get();
       if (requestDoc.exists) {
         const requestData = requestDoc.data();
+
+        // Update status to "en cours" if it's still "pas commencé"
+        if (requestData.status === 'pas commencé') {
+          await db.collection("document_requests").doc(requestId).update({ status: 'en cours' });
+        }
+
         await db.collection("notifications").doc().set({
           userID: requestData.userID,
           message: `Your document for request "${requestData.type}" has been uploaded by personnel.`,
@@ -47,7 +55,9 @@ const uploadDocument = async (req, res) => {
 // GET all requests (Admin or Personnel)
 const getAllRequests = async (req, res) => {
   try {
-    const decodedToken = await admin.auth().verifyIdToken(req.headers.authorization?.split(' ')[1]);
+    const decodedToken = await admin.auth().verifyIdToken(
+      req.headers.authorization?.split(' ')[1]
+    );
     if (!['admin', 'personnel'].includes(decodedToken.role)) {
       return res.status(403).json({ message: 'Access denied: admin or personnel only' });
     }
@@ -71,7 +81,9 @@ const getAllRequests = async (req, res) => {
 // GET request by ID (Admin or Personnel)
 const getRequestById = async (req, res) => {
   try {
-    const decodedToken = await admin.auth().verifyIdToken(req.headers.authorization?.split(' ')[1]);
+    const decodedToken = await admin.auth().verifyIdToken(
+      req.headers.authorization?.split(' ')[1]
+    );
     if (!['admin', 'personnel'].includes(decodedToken.role)) {
       return res.status(403).json({ message: 'Access denied: admin or personnel only' });
     }
@@ -90,6 +102,30 @@ const getRequestById = async (req, res) => {
   }
 };
 
+// GET requests for the current user (student/parent)
+const getUserRequests = async (req, res) => {
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(
+      req.headers.authorization?.split(' ')[1]
+    );
+
+    const snapshot = await db.collection('document_requests')
+      .where('userID', '==', decodedToken.uid)
+      .get();
+
+    const requests = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      timestamp: doc.data().timestamp?.toDate?.()?.toISOString() || new Date().toISOString()
+    }));
+
+    res.json(requests);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+
 // POST new request (Student, Parent, or Personnel)
 const addRequest = async (req, res) => {
   try {
@@ -99,7 +135,7 @@ const addRequest = async (req, res) => {
     const userDoc = await db.collection('users').doc(decodedToken.uid).get();
     if (!userDoc.exists) return res.status(404).json({ message: 'User not found' });
 
-    const role = userDoc.data().role?.toLowerCase(); // étudiant, parent, personnel
+    const role = userDoc.data().role?.toLowerCase();
     if (!['étudiant', 'parent', 'personnel'].includes(role)) {
       return res.status(403).json({ message: 'Access denied: only étudiant, parent, or personnel can send requests' });
     }
@@ -107,33 +143,30 @@ const addRequest = async (req, res) => {
     const { type, message } = req.body;
     if (!type || !message) return res.status(400).json({ error: "Type and message are required" });
 
-    // Default status is "en cours"
     const docRef = await db.collection("document_requests").add({
       userID: decodedToken.uid,
       type,
       message,
-      status: "en cours",
+      status: "pas commencé",
       role,
       timestamp: new Date()
     });
 
-    // Notify admins and personnel
-    const adminsPersonnelSnapshot = await db.collection("users")
-      .where("role", "in", ["admin", "personnel"])
+    // Notify personnel
+    const personnelSnapshot = await db.collection("users")
+      .where("role", "==", "personnel")
       .get();
 
-    const notifications = adminsPersonnelSnapshot.docs.map(user => ({
-      userID: user.id,
-      message: `New document request from ${userDoc.data().email}: ${type}`,
-      type: "Request",
-      status: "en cours",
-      timestamp: new Date()
-    }));
-
     const batch = db.batch();
-    notifications.forEach(notification => {
+    personnelSnapshot.docs.forEach(user => {
       const notifRef = db.collection("notifications").doc();
-      batch.set(notifRef, notification);
+      batch.set(notifRef, {
+        userID: user.id,
+        message: `New document request from ${userDoc.data().email}: ${type}`,
+        type: "Request",
+        status: "pas commencé",
+        timestamp: new Date()
+      });
     });
     await batch.commit();
 
@@ -146,7 +179,9 @@ const addRequest = async (req, res) => {
 // PATCH update 'status' (Personnel only)
 const updateRequestStatus = async (req, res) => {
   try {
-    const decodedToken = await admin.auth().verifyIdToken(req.headers.authorization?.split(' ')[1]);
+    const decodedToken = await admin.auth().verifyIdToken(
+      req.headers.authorization?.split(' ')[1]
+    );
     if (!['personnel'].includes(decodedToken.role)) {
       return res.status(403).json({ message: 'Access denied: personnel only' });
     }
@@ -161,7 +196,7 @@ const updateRequestStatus = async (req, res) => {
 
     await requestRef.update({ status });
 
-    // Notify the student/parent who made the request
+    // Notify the requester
     const requestData = requestDoc.data();
     await db.collection("notifications").doc().set({
       userID: requestData.userID,
@@ -182,5 +217,6 @@ module.exports = {
   getAllRequests,
   getRequestById,
   addRequest,
-  updateRequestStatus
+  updateRequestStatus,
+  getUserRequests
 };

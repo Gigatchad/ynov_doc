@@ -4,24 +4,33 @@ const {
   uploadDocument,
   getAllRequests,
   getRequestById,
+  getUserRequests, // for student/parent
   addRequest,
   updateRequestStatus
 } = require('../controllers/documentController');
-const { isAdmin } = require('../middlewares/authMiddleware');
+
+const { isAdminOrPersonnel, isAuthenticated , isPersonnel } = require('../middlewares/authMiddleware'); // middleware
 
 const router = express.Router();
 
 router.use(fileUpload());
 
+// Upload document (Personnel only)
+router.post('/upload',isPersonnel, uploadDocument);
 
-router.post('/upload', uploadDocument);
-
+// Add a new request (Student, Parent, or Personnel)
 router.post('/requests', addRequest);
 
-router.get('/requests', isAdmin, getAllRequests);
+// View all requests (Admin OR Personnel)
+router.get('/requests', isAdminOrPersonnel, getAllRequests);
 
-router.get('/requests/:id', isAdmin, getRequestById);
+// View request by ID (Admin OR Personnel)
+router.get('/requests/:id', isAdminOrPersonnel, getRequestById);
 
-router.patch('/requests/:id', isAdmin, updateRequestStatus);
+// Update request status (Personnel only)
+router.patch('/requests/:id', isPersonnel, updateRequestStatus);
+
+// View own requests (Student or Parent)
+router.get('/my-requests', isAuthenticated, getUserRequests);
 
 module.exports = router;
