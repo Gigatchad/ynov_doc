@@ -1,12 +1,12 @@
 const cloudinary = require('../cloudinaryConfig'); // Cloudinary config
 const { db, admin } = require('../firebase'); // Firebase Admin SDK
 
-// Upload document (Admin or Personnel)
+// Upload document (Personnel only)
 const uploadDocument = async (req, res) => {
   try {
     const decodedToken = await admin.auth().verifyIdToken(req.headers.authorization?.split(' ')[1]);
-    if (!['admin', 'personnel'].includes(decodedToken.role)) {
-      return res.status(403).json({ message: 'Access denied: admin or personnel only' });
+    if (!['personnel'].includes(decodedToken.role)) {
+      return res.status(403).json({ message: 'Access denied: personnel only' });
     }
 
     if (!req.files || !req.files.document) {
@@ -17,6 +17,22 @@ const uploadDocument = async (req, res) => {
     const uploadResult = await cloudinary.uploader.upload(document.tempFilePath, {
       folder: 'documents',
     });
+
+    // Notify the requester (student or parent) that their document was uploaded
+    const requestId = req.body.requestID;
+    if (requestId) {
+      const requestDoc = await db.collection("document_requests").doc(requestId).get();
+      if (requestDoc.exists) {
+        const requestData = requestDoc.data();
+        await db.collection("notifications").doc().set({
+          userID: requestData.userID,
+          message: `Your document for request "${requestData.type}" has been uploaded by personnel.`,
+          type: "DocumentUploaded",
+          status: "en cours",
+          timestamp: new Date()
+        });
+      }
+    }
 
     res.status(200).json({
       message: 'Document uploaded successfully',
@@ -96,15 +112,18 @@ const addRequest = async (req, res) => {
       userID: decodedToken.uid,
       type,
       message,
-      status: "en cours", // tracking field
-      role, // étudiant, parent, or personnel
+      status: "en cours",
+      role,
       timestamp: new Date()
     });
 
-    // Notify all admins
-    const adminsSnapshot = await db.collection("users").where("role", "==", "admin").get();
-    const notifications = adminsSnapshot.docs.map(adminDoc => ({
-      userID: adminDoc.id,
+    // Notify admins and personnel
+    const adminsPersonnelSnapshot = await db.collection("users")
+      .where("role", "in", ["admin", "personnel"])
+      .get();
+
+    const notifications = adminsPersonnelSnapshot.docs.map(user => ({
+      userID: user.id,
       message: `New document request from ${userDoc.data().email}: ${type}`,
       type: "Request",
       status: "en cours",
@@ -124,19 +143,34 @@ const addRequest = async (req, res) => {
   }
 };
 
-// PATCH update 'status' (Admin or Personnel)
+// PATCH update 'status' (Personnel only)
 const updateRequestStatus = async (req, res) => {
   try {
     const decodedToken = await admin.auth().verifyIdToken(req.headers.authorization?.split(' ')[1]);
-    if (!['admin', 'personnel'].includes(decodedToken.role)) {
-      return res.status(403).json({ message: 'Access denied: admin or personnel only' });
+    if (!['personnel'].includes(decodedToken.role)) {
+      return res.status(403).json({ message: 'Access denied: personnel only' });
     }
 
     const { status } = req.body;
     const validStatuses = ["en cours", "completed", "rejected"];
     if (!validStatuses.includes(status)) return res.status(400).json({ error: `Status must be one of ${validStatuses.join(", ")}` });
 
-    await db.collection("document_requests").doc(req.params.id).update({ status });
+    const requestRef = db.collection("document_requests").doc(req.params.id);
+    const requestDoc = await requestRef.get();
+    if (!requestDoc.exists) return res.status(404).json({ error: "Request not found" });
+
+    await requestRef.update({ status });
+
+    // Notify the student/parent who made the request
+    const requestData = requestDoc.data();
+    await db.collection("notifications").doc().set({
+      userID: requestData.userID,
+      message: `Your document request "${requestData.type}" has been updated to "${status}"`,
+      type: "StatusUpdate",
+      status,
+      timestamp: new Date()
+    });
+
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
